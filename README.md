@@ -1,5 +1,3 @@
-Generate a README.md file explaining the project. It is meant to demonstrate common vulnerabilities when using cryptographic primitives. In the merkle_replay_attack an airdrop contract that uses merkle trees to distribute tokens, can get attacked by replaying a proof. In the `multisig_threshold_attack` a multisig wallet can be attacked by exploiting the threshold requirement if one of the signers is compromised. Additionally, explain the `utils.merkle_tree` module and how it can be used to create and verify merkle proofs.
-
 # Merkle Multisig Attack Demo
 
 This project demonstrates common vulnerabilities when using cryptographic primitives like Merkle trees and digital signatures in smart contracts. It showcases two specific attack vectors:
