@@ -9,7 +9,7 @@ pub trait IAirdrop<TContractState> {
 }
 
 #[starknet::contract]
-mod TokenAirdrop {
+mod Airdrop {
     use alexandria_merkle_tree::merkle_tree::pedersen::PedersenHasherImpl;
     use alexandria_merkle_tree::merkle_tree::{Hasher, MerkleTree, MerkleTreeTrait};
     use merkle_multisig_attack::utils::mock_eth::{
