@@ -1,9 +1,9 @@
-use starknet::account;
+use starknet::account::Call;
 
 #[starknet::interface]
 pub trait IMultisig<T> {
-    fn __execute__(ref self: T, calls: Span<account::Call>) -> Array<Span<felt252>>;
-    fn __validate__(self: @T, calls: Span<account::Call>) -> felt252;
+    fn __execute__(ref self: T, calls: Span<Call>) -> Array<Span<felt252>>;
+    fn __validate__(self: @T, calls: Span<Call>) -> felt252;
     fn is_valid_signature(self: @T, hash: felt252, signature: Array<felt252>) -> felt252;
     fn supports_interface(self: @T, interface_id: felt252) -> bool;
 }
@@ -15,12 +15,12 @@ trait ISRC6<T> {
     // @notice Execute a transaction through the account
     // @param calls The list of calls to execute
     // @return The list of each call's serialized return value
-    fn __execute__(ref self: T, calls: Span<account::Call>) -> Array<Span<felt252>>;
+    fn __execute__(ref self: T, calls: Span<Call>) -> Array<Span<felt252>>;
 
     // @notice Assert whether the transaction is valid to be executed
     // @param calls The list of calls to execute
     // @return The string 'VALID' represented as a felt when is valid
-    fn __validate__(self: @T, calls: Span<account::Call>) -> felt252;
+    fn __validate__(self: @T, calls: Span<Call>) -> felt252;
 
     // @notice Assert whether a given signature for a given hash is valid
     // @dev signatures must be deserialized
@@ -43,7 +43,7 @@ trait ISRC5<T> {
 mod Multisig {
     use core::ecdsa;
     use core::num::traits::zero::Zero;
-    use starknet::account;
+    use starknet::account::Call;
     use starknet::storage::{
         Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
         StoragePointerWriteAccess,
@@ -51,14 +51,17 @@ mod Multisig {
     use starknet::syscalls::call_contract_syscall;
     use super::{ISRC5, ISRC6};
 
+    // hash of SNIP-6 trait
     const SRC6_INTERFACE_ID: felt252 =
-        1270010605630597976495846281167968799381097569185364931397797212080166453709; // hash of SNIP-6 trait
+        1270010605630597976495846281167968799381097569185364931397797212080166453709; 
     const MAX_SIGNERS_COUNT: usize = 32;
 
     #[storage]
     struct Storage {
-        signers: Map<felt252, felt252>, // Map of signers that can sign transactions
-        threshold: usize, // Amount of signatures required to execute a transaction
+        // Map of signers that can sign transactions
+        signers: Map<felt252, felt252>,
+        // Amount of signatures required to execute a transaction
+        threshold: usize,
         outside_nonce: Map<felt252, felt252>,
     }
 
@@ -78,13 +81,13 @@ mod Multisig {
     #[abi(embed_v0)]
     impl SRC6 of ISRC6<ContractState> {
         fn __execute__(
-            ref self: ContractState, calls: Span<account::Call>,
+            ref self: ContractState, calls: Span<Call>,
         ) -> Array<Span<felt252>> {
             assert_only_protocol();
             execute_multicall(calls)
         }
 
-        fn __validate__(self: @ContractState, calls: Span<account::Call>) -> felt252 {
+        fn __validate__(self: @ContractState, calls: Span<Call>) -> felt252 {
             assert_only_protocol();
             assert(calls.len() > 0, 'validate/no-calls');
             self.assert_valid_calls(calls);
@@ -114,23 +117,13 @@ mod Multisig {
     impl Private of PrivateTrait {
         // @notice Add signers to the contract
         fn add_signers(ref self: ContractState, mut signers: Span<felt252>, last: felt252) {
-            if let Option::Some(signer_ref) = signers.pop_front() {
+            if let Some(signer_ref) = signers.pop_front() {
                 let signer = *signer_ref;
                 assert(signer != 0, 'signer/zero-signer');
                 assert(!self.is_signer_using_last(signer, last), 'signer/is-already-signer');
                 self.signers.write(last, signer);
                 self.add_signers(signers, signer);
             }
-            // match signers.pop_front() {
-        //     Option::Some(signer_ref) => {
-        //         let signer = *signer_ref;
-        //         assert(signer != 0, 'signer/zero-signer');
-        //         assert(!self.is_signer_using_last(signer, last), 'signer/is-already-signer');
-        //         self.signers.write(last, signer);
-        //         self.add_signers(signers, signer);
-        //     },
-        //     Option::None => ()
-        // }
         }
 
         // @notice Asserts whether the signer is using the last signer
@@ -138,7 +131,6 @@ mod Multisig {
             if signer == 0 {
                 return false;
             }
-
             let next = self.signers.read(signer);
             if next != 0 {
                 return true;
@@ -153,29 +145,23 @@ mod Multisig {
             let threshold = self.threshold.read();
             assert(threshold != 0, 'Uninitialized');
 
-            let mut signatures = deserialize_signatures(signature).expect('signature/invalid-len');
+            let mut signatures = deserialize_signatures(signature)
+                .expect('signature/invalid-len');
 
             // Make sure we have the correct amount of signatures in the span
             assert(threshold == signatures.len(), 'signature/invalid-len');
 
             // Verify each signature
-            loop {
-                match signatures.pop_front() {
-                    Option::Some(signature_ref) => {
-                        let signature = *signature_ref;
-                        if !self
-                            .is_valid_signer_signature(
-                                hash,
-                                signature.signer,
-                                signature.signature_r,
-                                signature.signature_s,
-                            ) {
-                            break false;
-                        }
-                    },
-                    Option::None => { break true; },
-                }
+            for signature_ref in signatures {
+                let signature = *signature_ref;
+                if !self.is_valid_signer_signature(
+                    hash,
+                    signature.signer,
+                    signature.signature_r,
+                    signature.signature_s,
+                ) { return false; }
             }
+            true
         }
 
         // @notice Asserts whether the signature is valid ECDSA signature for this wallet
@@ -215,7 +201,7 @@ mod Multisig {
         }
 
         // @notice Asserts whether the transaction is valid to be executed
-        fn assert_valid_calls(self: @ContractState, calls: Span<account::Call>) {
+        fn assert_valid_calls(self: @ContractState, calls: Span<Call>) {
             assert_no_self_call(calls);
 
             let tx_info = starknet::get_tx_info().unbox();
@@ -243,16 +229,11 @@ mod Multisig {
 
     // @notice Deserialize signatures
     fn deserialize_signatures(mut serialized: Span<felt252>) -> Option<Span<SignerSignature>> {
-        let mut signatures = ArrayTrait::new();
-        loop {
-            if serialized.len() == 0 {
-                break Option::Some(signatures.span());
-            }
-            match Serde::deserialize(ref serialized) {
-                Option::Some(s) => { signatures.append(s) },
-                Option::None => { break Option::None; },
-            }
+        let mut signatures = array![];
+        while let Some(s) = Serde::deserialize(ref serialized) {
+            signatures.append(s);
         }
+        Some(signatures.span())
     }
 
     // @notice Assert that only the Sequencer can call the contract
@@ -262,21 +243,15 @@ mod Multisig {
     }
 
     // @notice Check that the calls are not triggering external wallet methods itself
-    fn assert_no_self_call(mut calls: Span<account::Call>) {
+    fn assert_no_self_call(mut calls: Span<Call>) {
         let self = starknet::get_contract_address();
         for call in calls {
             assert(*call.to != self, 'call/call-to-self');
         }
-        // loop {
-    //     match calls.pop_front() {
-    //         Option::Some(call) => { assert(*call.to != self, 'call/call-to-self'); },
-    //         Option::None => { break; }
-    //     }
-    // }
     }
 
     // @notice Execute multiple calls
-    fn execute_multicall(mut calls: Span<account::Call>) -> Array<Span<felt252>> {
+    fn execute_multicall(mut calls: Span<Call>) -> Array<Span<felt252>> {
         // Check if some calls are provided
         assert(calls.len() != 0, 'execute/no-calls');
         let mut result: Array<Span<felt252>> = array![];
@@ -291,7 +266,7 @@ mod Multisig {
                 },
                 Err(err) => {
                     let mut data = array![];
-                    data.append('call/multicall-faild');
+                    data.append('call/multicall-failed');
                     data.append(idx);
                     let mut err = err;
                     for v in err {
@@ -301,35 +276,6 @@ mod Multisig {
                 },
             }
         }
-        // loop {
-        //     match calls.pop_front() {
-        //         Option::Some(call) => {
-        //             // Initiate a syscall to execute a call
-        //             match starknet::call_contract_syscall(
-        //                 *call.to, *call.selector, *call.calldata
-        //             ) {
-        //                 Result::Ok(retdata) => {
-        //                     result.append(retdata);
-        //                     idx += 1;
-        //                 },
-        //                 Result::Err(err) => {
-        //                     let mut data = ArrayTrait::new();
-        //                     data.append('call/multicall-faild');
-        //                     data.append(idx);
-        //                     let mut err = err;
-        //                     loop {
-        //                         match err.pop_front() {
-        //                             Option::Some(v) => { data.append(v); },
-        //                             Option::None => { break; }
-        //                         }
-        //                     };
-        //                     panic(data);
-        //                 }
-        //             }
-        //         },
-        //         Option::None => { break; }
-        //     }
-        // };
         result
     }
 }
